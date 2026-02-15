@@ -3,6 +3,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { RpcException } from '@nestjs/microservices';
 import { PaginationOrderDto } from './dto/pagination-order.dto';
+import { ChangeStatusOrderDto } from './dto/change-status-order.dto';
 
 @Injectable()
 export class OrdersService {
@@ -55,5 +56,31 @@ export class OrdersService {
     }
 
     return order;
+  }
+
+  async changeStatus(changeStatusOrderDto: ChangeStatusOrderDto) {
+    const { id, status } = changeStatusOrderDto;
+    const order = await this.findOne(id);
+
+    if (!order) {
+      throw new RpcException({
+        status: HttpStatus.NOT_FOUND,
+        message: `Order with id #${id} not found`,
+      });
+    }
+
+    if (order.status === status) {
+      throw new RpcException({
+        status: HttpStatus.BAD_REQUEST,
+        message: `Order with id #${id} already has status ${status}`,
+      });
+    }
+
+    return await this.prisma.order.update({
+      where: { id },
+      data: {
+        status,
+      },
+    });
   }
 }
