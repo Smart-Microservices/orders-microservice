@@ -1,15 +1,83 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { PrismaService } from '../prisma/prisma.service';
-import { RpcException } from '@nestjs/microservices';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { PaginationOrderDto } from './dto/pagination-order.dto';
 import { ChangeStatusOrderDto } from './dto/change-status-order.dto';
+import { PRODUCT_SERVICE } from 'src/config/services';
+import { catchError, firstValueFrom } from 'rxjs';
+
+interface IProduct {
+  id: number;
+  name: string;
+  price: number;
+}
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
-  create(createOrderDto: CreateOrderDto) {
-    return this.prisma.order.create({ data: createOrderDto });
+  constructor(
+    private prisma: PrismaService,
+    @Inject(PRODUCT_SERVICE) private readonly productClient: ClientProxy,
+  ) {}
+  async create(createOrderDto: CreateOrderDto) {
+    // 1. Validar que los productos existan
+    const productIds = createOrderDto.items.map((item) => item.productId);
+    const products: IProduct[] = await firstValueFrom(
+      this.productClient
+        .send<IProduct[]>({ cmd: 'validate_products' }, productIds)
+        .pipe(
+          catchError((error) => {
+            throw new RpcException(error as object);
+          }),
+        ),
+    );
+
+    // 2. Calcular los valores
+    const totalAmount = createOrderDto.items.reduce((acc, orderItem) => {
+      const price = products.find(
+        (product) => product.id === orderItem.productId,
+      );
+
+      return price!.price * orderItem.quantity + acc;
+    }, 0);
+
+    const totalItems = createOrderDto.items.reduce((acc, orderItem) => {
+      return orderItem.quantity + acc;
+    }, 0);
+
+    // 3. Crear la orden
+    const order = await this.prisma.order.create({
+      data: {
+        totalAmount,
+        totalItems,
+        OrderItem: {
+          createMany: {
+            data: createOrderDto.items.map((orderItem) => ({
+              price: products.find((p) => p.id === orderItem.productId)!.price,
+              productId: orderItem.productId,
+              quantity: orderItem.quantity,
+            })),
+          },
+        },
+      },
+      include: {
+        OrderItem: {
+          select: {
+            productId: true,
+            quantity: true,
+            price: true,
+          },
+        },
+      },
+    });
+
+    return {
+      ...order,
+      OrderItem: order.OrderItem.map((orderItem) => ({
+        ...orderItem,
+        name: products.find((p) => p.id === orderItem.productId)!.name,
+      })),
+    };
   }
 
   async findAll(paginationOrderDto: PaginationOrderDto) {
@@ -46,7 +114,18 @@ export class OrdersService {
   }
 
   async findOne(id: string) {
-    const order = await this.prisma.order.findUnique({ where: { id } });
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      include: {
+        OrderItem: {
+          select: {
+            productId: true,
+            quantity: true,
+            price: true,
+          },
+        },
+      },
+    });
 
     if (!order) {
       throw new RpcException({
@@ -55,7 +134,24 @@ export class OrdersService {
       });
     }
 
-    return order;
+    const productIds = order.OrderItem.map((orderItem) => orderItem.productId);
+    const products: IProduct[] = await firstValueFrom(
+      this.productClient
+        .send<IProduct[]>({ cmd: 'validate_products' }, productIds)
+        .pipe(
+          catchError((error) => {
+            throw new RpcException(error as object);
+          }),
+        ),
+    );
+
+    return {
+      ...order,
+      OrderItem: order.OrderItem.map((orderItem) => ({
+        ...orderItem,
+        name: products.find((p) => p.id === orderItem.productId)!.name,
+      })),
+    };
   }
 
   async changeStatus(changeStatusOrderDto: ChangeStatusOrderDto) {
