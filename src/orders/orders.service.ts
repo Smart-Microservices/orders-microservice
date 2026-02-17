@@ -4,7 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { PaginationOrderDto } from './dto/pagination-order.dto';
 import { ChangeStatusOrderDto } from './dto/change-status-order.dto';
-import { PRODUCT_SERVICE } from 'src/config/services';
+import { NATS_SERVERS } from 'src/config/services';
 import { catchError, firstValueFrom } from 'rxjs';
 
 interface IProduct {
@@ -17,13 +17,13 @@ interface IProduct {
 export class OrdersService {
   constructor(
     private prisma: PrismaService,
-    @Inject(PRODUCT_SERVICE) private readonly productClient: ClientProxy,
+    @Inject(NATS_SERVERS) private readonly client: ClientProxy,
   ) {}
   async create(createOrderDto: CreateOrderDto) {
     // 1. Validar que los productos existan
     const productIds = createOrderDto.items.map((item) => item.productId);
     const products: IProduct[] = await firstValueFrom(
-      this.productClient
+      this.client
         .send<IProduct[]>({ cmd: 'validate_products' }, productIds)
         .pipe(
           catchError((error) => {
@@ -136,7 +136,7 @@ export class OrdersService {
 
     const productIds = order.OrderItem.map((orderItem) => orderItem.productId);
     const products: IProduct[] = await firstValueFrom(
-      this.productClient
+      this.client
         .send<IProduct[]>({ cmd: 'validate_products' }, productIds)
         .pipe(
           catchError((error) => {
